@@ -21,11 +21,12 @@ filebeat.inputs:
 - type: log
 
   # Change to true to enable this input configuration.
-  enabled: false
+  enabled: true
 
   # Paths that should be crawled and fetched. Glob based paths.
   paths:
-    - /var/log/*.log
+#    - /var/log/*.log
+    - /Users/bzeron/Code/workdir/service/booty-bay/runtime/logs/*.log
     #- c:\programdata\elasticsearch\logs\*
 
   # Exclude lines. A list of regular expressions to match. It drops the lines that are
@@ -173,9 +174,9 @@ setup.kibana:
 # Configure what output to use when sending the data collected by the beat.
 
 # ---------------------------- Elasticsearch Output ----------------------------
-output.elasticsearch:
+#output.elasticsearch:
   # Array of hosts to connect to.
-  hosts: ["localhost:9200"]
+#  hosts: ["localhost:9200"]
 
   # Protocol - either `http` (default) or `https`.
   #protocol: "https"
@@ -199,6 +200,34 @@ output.elasticsearch:
 
   # Client Certificate Key
   #ssl.key: "/etc/pki/client/cert.key"
+
+# ------------------------------ DingRobot Output ------------------------------
+output.ding_robot:
+  groups:
+  - name: spot
+    max_message_sleep: 10s
+    max_message_lines: 20
+    template: |
+      {{range .}}
+      ---
+      {{.raw}}
+      {{end}}
+    credentials:
+    - token: c41864227159ba29b7ab242e5614eb916649a848af898a8ebc1e6e36b76635a5
+      secret: SEC1b43da0fda7ba0599d2643e98b3a24eeaeca0d8aa73a7af11ca709c78a9c9d32
+    - token: a1eddcf308222874e2b67ceefb968a1346c87ab4c1244b7f56a2dd46b86360b3
+      secret: SECe48ff86f6539db3ecaa6a427c66e52a5fe1b293ec5715b896c932c2846f66a07
+    - token: e18f4c40194fc51b19fbf91143379eb5cedd37cdc8f974069d56a311c0cd5cfc
+      secret: SEC231ae914913c54788a60cd387e570cfc11dd8609dbc91402f55dc419f3d66191
+    - token: 5e2b83c2500ae937e23a9089d499f02085b2ee6c3a368154d482833f4e0c1247
+      secret: SEC231ae914913c54788a60cd387e570cfc11dd8609dbc91402f55dc419f3d66191
+    - token: 0284d242467e17451c1bec775ece3f0b51fb7ee363ecd6360615ea5cfcba44b5
+      secret: SEC7ac9b72ce2f0381bc02fc296a51b5c58e3d447aca0a8e915d538b72da1c354cd
+  rules:
+  - kind: text # text json
+    regexp: '\"level\":\s?\"(DEBUG|INFO|WARNING|WARN|ERROR)\"'
+    group: spot
+
 
 # ================================= Processors =================================
 processors:
