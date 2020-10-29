@@ -69,7 +69,7 @@ func makeDingRobot(
 
 func newDingRobot(beat beat.Info, observer outputs.Observer, cfg config) (*dingRobot, error) {
 	log := logp.NewLogger(name)
-	groupRules, err := cfg.makeGroupRules(beat.Hostname, log)
+	groupRules, err := cfg.makeGroupRules(beat, log)
 	if err != nil {
 		return nil, err
 	}
@@ -109,18 +109,18 @@ func (r *dingRobot) handleEvents(events []publisher.Event) ([]publisher.Event, i
 		message, err := event.Content.Fields.GetValue("message")
 		if err != nil {
 			dropped++
-			r.log.Errorf("get message field failed, %s", err)
+			r.log.Errorf("handle events get message field failed, %s", err)
 			continue
 		}
 		messageStr, converted := message.(string)
 		if !converted {
 			dropped++
-			r.log.Errorf("message field is not string")
+			r.log.Errorf("handle events message field is not string")
 			continue
 		}
 		for match, rule := range r.matchRules {
 			if match.MatchString(messageStr) {
-				go rule.push(messageStr)
+				go rule.push(event)
 			}
 		}
 	}

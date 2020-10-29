@@ -24,6 +24,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/publisher"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -65,7 +67,7 @@ type config struct {
 	Rules  []ruleConfig  `config:"rules"`
 }
 
-func (c config) makeGroupRules(hostname string, log *logp.Logger) (map[string]*groupRule, error) {
+func (c config) makeGroupRules(beat beat.Info, log *logp.Logger) (map[string]*groupRule, error) {
 	groups := make(map[string]*groupRule)
 	for _, group := range c.Groups {
 		tpl, err := template.New(group.Name).Parse(group.Template)
@@ -74,14 +76,14 @@ func (c config) makeGroupRules(hostname string, log *logp.Logger) (map[string]*g
 		}
 		groups[group.Name] = &groupRule{
 			status:          groupRuleStatusOpen,
-			hostname:        hostname,
+			beat:            beat,
 			log:             log,
 			template:        tpl,
 			credentials:     group.Credentials,
 			credentialIndex: 0,
 			maxMessageSleep: group.MaxMessageSleep,
 			maxMessageLines: group.MaxMessageLines,
-			messageChan:     make(chan string, group.MaxMessageLines),
+			messageChan:     make(chan publisher.Event, group.MaxMessageLines),
 		}
 	}
 	return groups, nil
@@ -109,7 +111,7 @@ const (
 type groupRule struct {
 	m               sync.RWMutex
 	status          int32 // 0 close 1 sleep
-	hostname        string
+	beat            beat.Info
 	log             *logp.Logger
 	template        *template.Template
 	credentials     []credentialConfig
@@ -117,7 +119,7 @@ type groupRule struct {
 	kind            string
 	maxMessageLines int32
 	maxMessageSleep time.Duration
-	messageChan     chan string
+	messageChan     chan publisher.Event
 }
 
 func (g *groupRule) setKind(kind string) {
@@ -130,7 +132,7 @@ func (g *groupRule) setStatus(status int32) {
 
 func (g *groupRule) resetMsgChan() {
 	close(g.messageChan)
-	g.messageChan = make(chan string, g.maxMessageLines)
+	g.messageChan = make(chan publisher.Event, g.maxMessageLines)
 }
 
 func (g *groupRule) credential() credentialConfig {
@@ -147,7 +149,7 @@ func (g *groupRule) close() {
 	}
 }
 
-func (g *groupRule) push(msg string) {
+func (g *groupRule) push(event publisher.Event) {
 	g.m.RLock()
 	status := g.status
 	g.m.RUnlock()
@@ -160,7 +162,7 @@ func (g *groupRule) push(msg string) {
 		return
 	case groupRuleStatusOpen:
 		select {
-		case g.messageChan <- msg:
+		case g.messageChan <- event:
 			g.log.Debug("push group message success")
 		default:
 			g.m.Lock()
@@ -174,7 +176,7 @@ func (g *groupRule) push(msg string) {
 			})
 			credential := g.credential()
 			g.m.Unlock()
-			g.asyncSendDingRobotMessage(credential.Token, credential.Secret, fmt.Sprintf("%s:错误消息太多，请关注错误日志", g.hostname))
+			g.asyncSendDingRobotMessage(credential.Token, credential.Secret, fmt.Sprintf("%s:错误消息太多，请关注错误日志", g.beat.Name))
 		}
 	}
 }
@@ -190,37 +192,58 @@ func (g *groupRule) start() {
 			return
 		}
 		<-tk.C
-		go g.handleMsg()
+		go g.handleMessage()
 	}
 }
 
-func (g *groupRule) handleMsg() {
+func (g *groupRule) handleMessage() {
 	length := len(g.messageChan)
 	if length <= 0 {
 		g.log.Debug("read no message, looping")
 		return
 	}
-	alerts := make([]map[string]interface{}, 0)
+	messages := make([]publisher.Event, length)
 	for i := 0; i < length; i++ {
-		msg := <-g.messageChan
+		messages[i] = <-g.messageChan
+	}
+	g.prepareMessage(messages...)
+}
+
+func (g *groupRule) prepareMessage(events ...publisher.Event) {
+	length := len(events)
+	if length <= 0 {
+		return
+	}
+	data := make([]map[string]interface{}, length)
+	for i, event := range events {
+		message, err := event.Content.GetValue("message")
+		if err != nil {
+			g.log.Errorf("prepare message get message field failed, %s", err)
+			continue
+		}
+		messageStr, converted := message.(string)
+		if !converted {
+			g.log.Errorf("prepare message message field is not string")
+			continue
+		}
 		switch g.kind {
 		case "json":
 			var alert map[string]interface{}
-			err := json.Unmarshal([]byte(msg), &alert)
+			err := json.Unmarshal([]byte(messageStr), &alert)
 			if err != nil {
 				g.log.Errorf("unmarshal message error: %s", err)
 				continue
 			}
-			alert["raw"] = msg
-			alerts = append(alerts, alert)
+			alert["raw"] = message
+			data[i] = alert
 		default:
-			alerts = append(alerts, map[string]interface{}{
-				"raw": msg,
-			})
+			data[i] = map[string]interface{}{
+				"raw": message,
+			}
 		}
 	}
 	templateCache := bytes.NewBuffer(nil)
-	err := g.template.Execute(templateCache, alerts)
+	err := g.template.Execute(templateCache, data)
 	if err != nil {
 		g.log.Errorf("execute template error: %s", err)
 		return
