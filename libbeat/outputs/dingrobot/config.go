@@ -92,6 +92,18 @@ func (r *robotRule) getCredential() *credential {
 	return c
 }
 
+func (r *robotRule) convertToSleep() {
+	r.log.Error("retry send ding robot max times")
+	r.m.Lock()
+	r.status = ruleStatusSleep
+	r.m.Unlock()
+	time.AfterFunc(time.Minute, func() {
+		r.m.Lock()
+		r.status = ruleStatusOpen
+		r.m.Unlock()
+	})
+}
+
 func (r *robotRule) Close() error {
 	r.m.Lock()
 	defer r.m.Unlock()
@@ -120,14 +132,7 @@ func (r *robotRule) Push(event publisher.Event) {
 		case r.messageChan <- event:
 			r.log.Debug("push message success")
 		default:
-			r.m.Lock()
-			r.status = ruleStatusSleep
-			r.m.Unlock()
-			time.AfterFunc(time.Minute, func() {
-				r.m.Lock()
-				defer r.m.Unlock()
-				r.status = ruleStatusOpen
-			})
+			r.convertToSleep()
 		}
 	}
 }
@@ -223,15 +228,18 @@ func (r *robotRule) asyncSendDingRobotMessage(message string) {
 				goto Retry
 			} else {
 				r.log.Error("retry send ding robot max times")
+				r.convertToSleep()
 				return
 			}
 		}
 		err := r.sendDingRobotMessage(c.token, c.secret, message)
 		if err != nil {
+			r.log.Errorf("send message error: %s, retrying", err)
 			r.m.Lock()
 			c.enabled = false
 			r.m.Unlock()
-			r.log.Errorf("send ding robot error: %s", err)
+			retry++
+			goto Retry
 		}
 	}()
 }

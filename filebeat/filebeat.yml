@@ -26,7 +26,7 @@ filebeat.inputs:
   # Paths that should be crawled and fetched. Glob based paths.
   paths:
 #    - /var/log/*.log
-    - /Users/bzeron/Code/workdir/service/booty-bay/runtime/logs/*.log
+    - /tmp/*.log
     #- c:\programdata\elasticsearch\logs\*
 
   # Exclude lines. A list of regular expressions to match. It drops the lines that are
@@ -205,8 +205,6 @@ setup.kibana:
 output.ding_robot:
   groups:
   - name: spot
-    max_message_sleep: 10s
-    max_message_lines: 20
     template: |
       {{range .}}
       ---
@@ -224,7 +222,7 @@ output.ding_robot:
     - token: 0284d242467e17451c1bec775ece3f0b51fb7ee363ecd6360615ea5cfcba44b5
       secret: SEC7ac9b72ce2f0381bc02fc296a51b5c58e3d447aca0a8e915d538b72da1c354cd
   rules:
-  - kind: text # text json
+  - kind: raw # json raw
     regexp: '\"level\":\s?\"(DEBUG|INFO|WARNING|WARN|ERROR)\"'
     group: spot
 

@@ -97,7 +97,7 @@ func newDingRobot(beat beat.Info, observer outputs.Observer, cfg config) (*dingR
 			template:        tpl,
 			credentials:     cs,
 			credentialIndex: 0,
-			messageChan:     make(chan publisher.Event, 10*len(cs)),
+			messageChan:     make(chan publisher.Event, 20*10*len(cs)),
 		}
 	}
 	for _, r := range cfg.Rules {
