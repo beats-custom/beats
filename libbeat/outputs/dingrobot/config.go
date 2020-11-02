@@ -24,17 +24,17 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/elastic/beats/v7/libbeat/beat"
-	"github.com/elastic/beats/v7/libbeat/publisher"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sync"
 	"text/template"
 	"time"
 
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/logp"
 	"github.com/elastic/beats/v7/libbeat/outputs/codec"
+	"github.com/elastic/beats/v7/libbeat/publisher"
 )
 
 var (
@@ -42,228 +42,201 @@ var (
 	defaultConfig = config{}
 )
 
-type credentialConfig struct {
-	Token  string `json:"token"`
-	Secret string `json:"secret"`
-}
-
-type groupConfig struct {
-	Name            string             `config:"name"`
-	MaxMessageSleep time.Duration      `config:"max_message_sleep"`
-	MaxMessageLines int32              `config:"max_message_lines"`
-	Template        string             `config:"template"`
-	Credentials     []credentialConfig `config:"credentials"`
-}
-
-type ruleConfig struct {
-	Kind   string `config:"kind"`
-	Regexp string `config:"regexp"`
-	Group  string `config:"group"`
-}
-
 type config struct {
-	Codec  codec.Config  `config:"codec"`
-	Groups []groupConfig `config:"groups"`
-	Rules  []ruleConfig  `config:"rules"`
-}
-
-func (c config) makeGroupRules(beat beat.Info, log *logp.Logger) (map[string]*groupRule, error) {
-	groups := make(map[string]*groupRule)
-	for _, group := range c.Groups {
-		tpl, err := template.New(group.Name).Parse(group.Template)
-		if err != nil {
-			return nil, err
-		}
-		groups[group.Name] = &groupRule{
-			status:          groupRuleStatusOpen,
-			beat:            beat,
-			log:             log,
-			template:        tpl,
-			credentials:     group.Credentials,
-			credentialIndex: 0,
-			maxMessageSleep: group.MaxMessageSleep,
-			maxMessageLines: group.MaxMessageLines,
-			messageChan:     make(chan publisher.Event, group.MaxMessageLines),
-		}
-	}
-	return groups, nil
-}
-
-func (c config) makeMatchRules(groupRules map[string]*groupRule) (map[*regexp.Regexp]*groupRule, error) {
-	matchRules := make(map[*regexp.Regexp]*groupRule)
-	for _, rule := range c.Rules {
-		groupRule, exist := groupRules[rule.Group]
-		if !exist {
-			return nil, fmt.Errorf("group %s not exist", rule.Group)
-		}
-		groupRule.setKind(rule.Kind)
-		matchRules[regexp.MustCompile(rule.Regexp)] = groupRule
-	}
-	return matchRules, nil
+	Codec  codec.Config `config:"codec"`
+	Groups []struct {
+		Name        string `config:"name"`
+		Template    string `config:"template"`
+		Credentials []struct {
+			Token  string `json:"token"`
+			Secret string `json:"secret"`
+		} `config:"credentials"`
+	} `config:"groups"`
+	Rules []struct {
+		Kind   string `config:"kind"`
+		Regexp string `config:"regexp"`
+		Group  string `config:"group"`
+	} `config:"rules"`
 }
 
 const (
-	groupRuleStatusClose = iota
-	groupRuleStatusSleep
-	groupRuleStatusOpen
+	ruleStatusClose = iota
+	ruleStatusSleep
+	ruleStatusOpen
 )
 
-type groupRule struct {
+type credential struct {
+	enabled bool
+	token   string
+	secret  string
+}
+
+type robotRule struct {
 	m               sync.RWMutex
-	status          int32 // 0 close 1 sleep
+	status          int32
 	beat            beat.Info
 	log             *logp.Logger
 	template        *template.Template
-	credentials     []credentialConfig
+	credentials     []*credential
 	credentialIndex int
 	kind            string
-	maxMessageLines int32
-	maxMessageSleep time.Duration
 	messageChan     chan publisher.Event
 }
 
-func (g *groupRule) setKind(kind string) {
-	g.kind = kind
+func (r *robotRule) getCredential() *credential {
+	r.credentialIndex = (r.credentialIndex + 1) % len(r.credentials)
+	c := r.credentials[r.credentialIndex]
+	if c.enabled == false {
+		return nil
+	}
+	return c
 }
 
-func (g *groupRule) setStatus(status int32) {
-	g.status = status
-}
-
-func (g *groupRule) resetMsgChan() {
-	close(g.messageChan)
-	g.messageChan = make(chan publisher.Event, g.maxMessageLines)
-}
-
-func (g *groupRule) credential() credentialConfig {
-	g.credentialIndex = (g.credentialIndex + 1) % len(g.credentials)
-	return g.credentials[g.credentialIndex]
-}
-
-func (g *groupRule) close() {
-	g.m.Lock()
-	defer g.m.Unlock()
-	if g.status != groupRuleStatusClose {
-		g.setStatus(groupRuleStatusClose)
-		close(g.messageChan)
+func (r *robotRule) Close() error {
+	r.m.Lock()
+	defer r.m.Unlock()
+	if r.status != ruleStatusClose {
+		r.status = ruleStatusClose
+		close(r.messageChan)
+		return nil
+	} else {
+		return fmt.Errorf("robot rule closed")
 	}
 }
 
-func (g *groupRule) push(event publisher.Event) {
-	g.m.RLock()
-	status := g.status
-	g.m.RUnlock()
+func (r *robotRule) Push(event publisher.Event) {
+	r.m.RLock()
+	status := r.status
+	r.m.RUnlock()
 	switch status {
-	case groupRuleStatusClose:
-		g.log.Error("group rule closed")
+	case ruleStatusClose:
+		r.log.Error("rule closed")
 		return
-	case groupRuleStatusSleep:
-		g.log.Debug("group rule closed sleep")
+	case ruleStatusSleep:
+		r.log.Debug("rule sleep")
 		return
-	case groupRuleStatusOpen:
+	case ruleStatusOpen:
 		select {
-		case g.messageChan <- event:
-			g.log.Debug("push group message success")
+		case r.messageChan <- event:
+			r.log.Debug("push message success")
 		default:
-			g.m.Lock()
-			// 数据阻塞，处理不过来，规则开始休眠，n秒钟后打开该规则
-			g.setStatus(groupRuleStatusSleep)
-			g.resetMsgChan()
-			time.AfterFunc(g.maxMessageSleep, func() {
-				g.m.Lock()
-				defer g.m.Unlock()
-				g.setStatus(groupRuleStatusOpen)
+			r.m.Lock()
+			r.status = ruleStatusSleep
+			r.m.Unlock()
+			time.AfterFunc(time.Minute, func() {
+				r.m.Lock()
+				defer r.m.Unlock()
+				r.status = ruleStatusOpen
 			})
-			credential := g.credential()
-			g.m.Unlock()
-			g.asyncSendDingRobotMessage(credential.Token, credential.Secret, fmt.Sprintf("%s:错误消息太多，请关注错误日志", g.beat.Name))
 		}
 	}
 }
 
-func (g *groupRule) start() {
-	tk := time.NewTicker(time.Second * 3)
-	defer tk.Stop()
+func (r *robotRule) Start() {
+	timer := time.NewTimer(time.Second * 3)
 	for {
-		g.m.RLock()
-		status := g.status
-		g.m.RUnlock()
-		if status == groupRuleStatusClose {
+		r.m.RLock()
+		status := r.status
+		r.m.RUnlock()
+		if status == ruleStatusClose {
 			return
 		}
-		<-tk.C
-		go g.handleMessage()
+		r.handleMessage(timer)
 	}
 }
 
-func (g *groupRule) handleMessage() {
-	length := len(g.messageChan)
-	if length <= 0 {
-		g.log.Debug("read no message, looping")
-		return
+func (r *robotRule) handleMessage(timer *time.Timer) {
+	timer.Reset(time.Second * 3)
+	defer timer.Stop()
+	events := make([]publisher.Event, 0, 10)
+	for i := 0; i < 10; i++ {
+		select {
+		case event, ok := <-r.messageChan:
+			if ok {
+				events = append(events, event)
+			}
+		case <-timer.C:
+			goto TimeOver
+		}
 	}
-	messages := make([]publisher.Event, length)
-	for i := 0; i < length; i++ {
-		messages[i] = <-g.messageChan
-	}
-	g.prepareMessage(messages...)
+TimeOver:
+	go r.prepareMessage(events...)
 }
 
-func (g *groupRule) prepareMessage(events ...publisher.Event) {
+func (r *robotRule) prepareMessage(events ...publisher.Event) {
 	length := len(events)
 	if length <= 0 {
 		return
 	}
-	data := make([]map[string]interface{}, length)
+	data := make([]common.MapStr, length)
 	for i, event := range events {
 		message, err := event.Content.GetValue("message")
 		if err != nil {
-			g.log.Errorf("prepare message get message field failed, %s", err)
+			r.log.Errorf("get message field failed, %s", err)
 			continue
 		}
-		messageStr, converted := message.(string)
-		if !converted {
-			g.log.Errorf("prepare message message field is not string")
+		file, err := event.Content.GetValue("log.file.path")
+		if err != nil {
+			r.log.Errorf("get log.file.path field failed, %s", err)
 			continue
 		}
-		switch g.kind {
-		case "json":
-			var alert map[string]interface{}
-			err := json.Unmarshal([]byte(messageStr), &alert)
-			if err != nil {
-				g.log.Errorf("unmarshal message error: %s", err)
+		field := common.MapStr{}
+		if r.kind == "json" {
+			messageStr, converted := message.(string)
+			if !converted {
+				r.log.Error("message field is not string")
 				continue
 			}
-			alert["raw"] = message
-			data[i] = alert
-		default:
-			data[i] = map[string]interface{}{
-				"raw": message,
+			messageField := common.MapStr{}
+			err = json.Unmarshal([]byte(messageStr), &messageField)
+			if err != nil {
+				r.log.Errorf("unmarshal message error: %s", err)
+				continue
 			}
+			field.Update(messageField)
 		}
+		field.Put("raw", message)
+		field.Put("file", file)
+		field.Put("beatName", r.beat.Name)
+		data[i] = field
 	}
 	templateCache := bytes.NewBuffer(nil)
-	err := g.template.Execute(templateCache, data)
+	err := r.template.Execute(templateCache, data)
 	if err != nil {
-		g.log.Errorf("execute template error: %s", err)
+		r.log.Errorf("execute template error: %s", err)
 		return
 	}
-	g.m.Lock()
-	credential := g.credential()
-	g.m.Unlock()
-	g.asyncSendDingRobotMessage(credential.Token, credential.Secret, templateCache.String())
+	r.asyncSendDingRobotMessage(templateCache.String())
 }
 
-func (g *groupRule) asyncSendDingRobotMessage(token, secret, message string) {
+func (r *robotRule) asyncSendDingRobotMessage(message string) {
 	go func() {
-		err := g.sendDingRobotMessage(token, secret, message)
+		retry := 1
+	Retry:
+		r.m.Lock()
+		c := r.getCredential()
+		r.m.Unlock()
+		if c == nil {
+			if retry <= len(r.credentials) {
+				retry++
+				r.log.Warnf("send message failed, retry: %d", retry)
+				goto Retry
+			} else {
+				r.log.Error("retry send ding robot max times")
+				return
+			}
+		}
+		err := r.sendDingRobotMessage(c.token, c.secret, message)
 		if err != nil {
-			g.log.Errorf("send ding robot message error: %s", err)
+			r.m.Lock()
+			c.enabled = false
+			r.m.Unlock()
+			r.log.Errorf("send ding robot error: %s", err)
 		}
 	}()
 }
 
-func (g *groupRule) sendDingRobotMessage(token, secret, message string) error {
+func (r *robotRule) sendDingRobotMessage(token, secret, message string) error {
 	if message == "" {
 		return nil
 	}
@@ -301,6 +274,7 @@ func (g *groupRule) sendDingRobotMessage(token, secret, message string) error {
 	if response.StatusCode != 200 {
 		return fmt.Errorf(http.StatusText(response.StatusCode))
 	}
+	//code: 130101, message: send too fast, exceed 20 times per minute
 	var result struct {
 		ErrCode int    `json:"errcode"`
 		ErrMsg  string `json:"errmsg"`
@@ -309,8 +283,8 @@ func (g *groupRule) sendDingRobotMessage(token, secret, message string) error {
 	if err != nil {
 		return err
 	}
-	if result.ErrCode != 0 {
-		return fmt.Errorf("code: %d, message: %s", result.ErrCode, result.ErrMsg)
+	if result.ErrCode != 0 || result.ErrMsg != "ok" {
+		return fmt.Errorf("send message failed, code: %d, message: %s", result.ErrCode, result.ErrMsg)
 	}
 	return nil
 }

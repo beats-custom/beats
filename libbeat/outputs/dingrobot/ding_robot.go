@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"text/template"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
@@ -38,8 +39,8 @@ type dingRobot struct {
 	observer   outputs.Observer
 	config     config
 	log        *logp.Logger
-	groupRules map[string]*groupRule
-	matchRules map[*regexp.Regexp]*groupRule
+	rules      map[string]*robotRule
+	matchRules map[*regexp.Regexp]*robotRule
 }
 
 func init() {
@@ -59,82 +60,104 @@ func makeDingRobot(
 	// disable bulk support in publisher pipeline
 	cfg.SetInt("bulk_max_size", -1, -1)
 	// new ding robot
-	dingRobotFactory, err := newDingRobot(beat, observer, defaultConfig)
+	robot, err := newDingRobot(beat, observer, defaultConfig)
 	if err != nil {
 		return outputs.Fail(fmt.Errorf("%s output initialization failed with: %v", name, err))
 	}
-	dingRobotFactory.Start()
-	return outputs.Success(-1, 0, dingRobotFactory)
+	robot.Start()
+	return outputs.Success(-1, 0, robot)
 }
 
 func newDingRobot(beat beat.Info, observer outputs.Observer, cfg config) (*dingRobot, error) {
-	log := logp.NewLogger(name)
-	groupRules, err := cfg.makeGroupRules(beat, log)
-	if err != nil {
-		return nil, err
-	}
-	matchRules, err := cfg.makeMatchRules(groupRules)
-	if err != nil {
-		return nil, err
-	}
-	dingRobotFactory := &dingRobot{
+	robot := &dingRobot{
 		beat:       beat,
 		observer:   observer,
 		config:     cfg,
-		log:        log,
-		groupRules: groupRules,
-		matchRules: matchRules,
+		log:        logp.NewLogger(name),
+		rules:      make(map[string]*robotRule),
+		matchRules: make(map[*regexp.Regexp]*robotRule),
 	}
-	return dingRobotFactory, nil
+	for _, g := range cfg.Groups {
+		tpl, err := template.New(g.Name).Parse(g.Template)
+		if err != nil {
+			return nil, err
+		}
+		cs := make([]*credential, len(g.Credentials))
+		for i, c := range g.Credentials {
+			cs[i] = &credential{
+				enabled: true,
+				token:   c.Token,
+				secret:  c.Secret,
+			}
+		}
+		robot.rules[g.Name] = &robotRule{
+			status:          ruleStatusOpen,
+			beat:            beat,
+			log:             robot.log,
+			template:        tpl,
+			credentials:     cs,
+			credentialIndex: 0,
+			messageChan:     make(chan publisher.Event, 10*len(cs)),
+		}
+	}
+	for _, r := range cfg.Rules {
+		rule, exist := robot.rules[r.Group]
+		if !exist {
+			return nil, fmt.Errorf("group %s not exist", r.Group)
+		}
+		rule.kind = r.Kind
+		robot.matchRules[regexp.MustCompile(r.Regexp)] = rule
+	}
+	return robot, nil
 }
 
-func (r *dingRobot) Start() error {
-	for _, rule := range r.groupRules {
-		go rule.start()
+func (rbt *dingRobot) Start() error {
+	for _, r := range rbt.rules {
+		go r.Start()
 	}
 	return nil
 }
 
-func (r *dingRobot) Close() error {
-	for _, rule := range r.groupRules {
-		go rule.close()
+func (rbt *dingRobot) Close() error {
+	for _, r := range rbt.rules {
+		go r.Close()
 	}
 	return nil
 }
 
-func (r *dingRobot) handleEvents(events []publisher.Event) ([]publisher.Event, int, error) {
+func (rbt *dingRobot) handleEvents(events []publisher.Event) ([]publisher.Event, int, error) {
 	var failed []publisher.Event
 	var dropped int
-	for _, event := range events {
-		message, err := event.Content.Fields.GetValue("message")
+	for _, e := range events {
+		message, err := e.Content.Fields.GetValue("message")
 		if err != nil {
 			dropped++
-			r.log.Errorf("handle events get message field failed, %s", err)
+			rbt.log.Errorf("handle events get message field failed, %s", err)
 			continue
 		}
 		messageStr, converted := message.(string)
 		if !converted {
 			dropped++
-			r.log.Errorf("handle events message field is not string")
+			rbt.log.Errorf("handle events message field is not string")
 			continue
 		}
-		for match, rule := range r.matchRules {
-			if match.MatchString(messageStr) {
-				go rule.push(event)
+		for m, r := range rbt.matchRules {
+			if m.MatchString(messageStr) {
+				go r.Push(e)
 			}
 		}
 	}
 	return failed, dropped, nil
 }
 
-func (r *dingRobot) Publish(_ context.Context, batch publisher.Batch) error {
-	observer := r.observer
+func (rbt *dingRobot) Publish(_ context.Context, batch publisher.Batch) error {
+	ob := rbt.observer
 	events := batch.Events()
-	observer.NewBatch(len(events))
-	failed, dropped, err := r.handleEvents(events)
-	observer.Dropped(dropped)
-	observer.Failed(len(failed))
-	observer.Acked(len(events) - len(failed) - dropped)
+	ob.NewBatch(len(events))
+	failed, dropped, err := rbt.handleEvents(events)
+	ob.Dropped(dropped)
+	ob.Failed(len(failed))
+	ob.Acked(len(events) - len(failed) - dropped)
 	if len(failed) != 0 {
 		batch.RetryEvents(failed)
 	} else {
@@ -143,6 +166,6 @@ func (r *dingRobot) Publish(_ context.Context, batch publisher.Batch) error {
 	return err
 }
 
-func (r *dingRobot) String() string {
+func (rbt *dingRobot) String() string {
 	return name
 }
