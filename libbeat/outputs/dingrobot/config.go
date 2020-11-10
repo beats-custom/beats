@@ -238,6 +238,11 @@ func (r *robotRule) asyncSendDingRobotMessage(message string) {
 			r.m.Lock()
 			c.enabled = false
 			r.m.Unlock()
+			time.AfterFunc(time.Minute, func() {
+				r.m.Lock()
+				c.enabled = true
+				r.m.Unlock()
+			})
 			retry++
 			goto Retry
 		}
