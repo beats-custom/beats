@@ -23,6 +23,8 @@ import (
 	"regexp"
 	"text/template"
 
+	"github.com/Masterminds/sprig"
+
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/logp"
@@ -78,7 +80,7 @@ func newDingRobot(beat beat.Info, observer outputs.Observer, cfg config) (*dingR
 		matchRules: make(map[*regexp.Regexp]*robotRule),
 	}
 	for _, g := range cfg.Groups {
-		tpl, err := template.New(g.Name).Parse(g.Template)
+		tpl, err := template.New(g.Name).Funcs(sprig.TxtFuncMap()).Parse(g.Template)
 		if err != nil {
 			return nil, err
 		}

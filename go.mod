@@ -19,6 +19,9 @@ require (
 	github.com/Azure/go-autorest/autorest/adal v0.8.2
 	github.com/Azure/go-autorest/autorest/azure/auth v0.4.2
 	github.com/Azure/go-autorest/autorest/date v0.2.0
+	github.com/Masterminds/goutils v1.1.0 // indirect
+	github.com/Masterminds/semver v1.5.0 // indirect
+	github.com/Masterminds/sprig v2.22.0+incompatible
 	github.com/Microsoft/go-winio v0.4.15-0.20190919025122-fc70bd9a86b5
 	github.com/Shopify/sarama v1.27.0
 	github.com/StackExchange/wmi v0.0.0-20170221213301-9f32b5905fd6
@@ -92,7 +95,7 @@ require (
 	github.com/google/flatbuffers v1.7.2-0.20170925184458-7a6b2bf521e9
 	github.com/google/go-cmp v0.4.0
 	github.com/google/gopacket v1.1.18-0.20191009163724-0ad7f2610e34
-	github.com/google/uuid v1.1.2-0.20190416172445-c2e93f3ae59f
+	github.com/google/uuid v1.1.2
 	github.com/gorhill/cronexpr v0.0.0-20161205141322-d520615e531a
 	github.com/gorilla/mux v1.7.2 // indirect
 	github.com/gorilla/websocket v1.4.1 // indirect
@@ -102,6 +105,8 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.6.6
 	github.com/hashicorp/golang-lru v0.5.2-0.20190520140433-59383c442f7d // indirect
 	github.com/hectane/go-acl v0.0.0-20190604041725-da78bae5fc95
+	github.com/huandu/xstrings v1.3.2 // indirect
+	github.com/imdario/mergo v0.3.11 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20180716145214-633285ba52b2
 	github.com/jmoiron/sqlx v1.2.1-0.20190826204134-d7d95172beb5
 	github.com/joeshaw/multierror v0.0.0-20140124173710-69b34d4ec901
@@ -119,9 +124,11 @@ require (
 	github.com/mattn/go-isatty v0.0.2 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.2-0.20181231171920-c182affec369 // indirect
 	github.com/miekg/dns v1.1.15
+	github.com/mitchellh/copystructure v1.0.0 // indirect
 	github.com/mitchellh/gox v1.0.1
 	github.com/mitchellh/hashstructure v0.0.0-20170116052023-ab25296c0f51
 	github.com/mitchellh/mapstructure v1.1.2
+	github.com/mitchellh/reflectwalk v1.0.1 // indirect
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/oklog/ulid v1.3.1
 	github.com/opencontainers/go-digest v1.0.0-rc1.0.20190228220655-ac19fd6e7483 // indirect
@@ -164,7 +171,7 @@ require (
 	go.uber.org/atomic v1.5.0
 	go.uber.org/multierr v1.3.0
 	go.uber.org/zap v1.14.0
-	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
+	golang.org/x/crypto v0.0.0-20201221181555-eec23a3978ad
 	golang.org/x/lint v0.0.0-20200130185559-910be7a94367
 	golang.org/x/net v0.0.0-20200707034311-ab3426394381
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
